@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="always">
+    <title>云闪付安全支付</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Arial", sans-serif; }
+        body { background: #f8f9fa; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 20px; }
+        .safe-tip { position: fixed; top: 0; left: 0; right: 0; background: #007AFF; color: white; padding: 12px; text-align: center; font-size: 14px; z-index: 999; }
+        .loading { width: 40px; height: 40px; border: 4px solid #e5e7eb; border-top: 4px solid #007AFF; border-radius: 50%; animation: spin 1s linear infinite; margin: 80px 0 20px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .logo { width: 80px; height: 80px; background: #007AFF; border-radius: 16px; display: flex; align-items: center; justify-content: center; color: white; font-size: 18px; margin-bottom: 20px; }
+        .order-card { width: 100%; max-width: 350px; background: white; border-radius: 12px; padding: 18px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 25px; }
+        .order-card .card-title { font-size: 16px; color: #333; margin-bottom: 15px; padding-bottom: 8px; border-bottom: 1px solid #f0f0f0; }
+        .order-item { display: flex; justify-content: space-between; font-size: 15px; color: #666; margin: 12px 0; }
+        .order-item .item-key { color: #888; }
+        .order-item .amount { color: #E53935; font-weight: 500; font-size: 16px; }
+        .tip { font-size: 15px; color: #555; margin: 8px 0; text-align: center; line-height: 1.5; }
+        .pay-btn { margin-top: 15px; padding: 14px 40px; background: #007AFF; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 500; cursor: pointer; display: none; transition: background 0.3s; }
+        .pay-btn:hover { background: #0066D6; }
+        .wechat-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; justify-content: center; align-items: center; z-index: 1000; }
+        .wechat-content { width: 80%; max-width: 300px; background: white; border-radius: 12px; padding: 25px 20px; text-align: center; }
+        .wechat-icon { font-size: 40px; color: #7BB32E; margin-bottom: 15px; }
+        .wechat-text { font-size: 16px; color: #333; margin-bottom: 20px; line-height: 1.6; }
+        .wechat-btn { padding: 10px 25px; background: #007AFF; color: white; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="safe-tip">云闪付安全支付中</div>
+    <div class="wechat-modal" id="wechatModal">
+        <div class="wechat-content">
+            <div class="wechat-icon">✓</div>
+            <div class="wechat-text">微信暂不支持直接唤起云闪付<br>请点击右上角「...」选择「在浏览器中打开」</div>
+            <button class="wechat-btn" id="closeWechatModal">我知道了</button>
+        </div>
+    </div>
+    <div class="loading" id="loading"></div>
+    <div class="logo">云闪付</div>
+    <div class="order-card" id="orderCard">
+        <div class="card-title">订单详情</div>
+        <div class="order-item">
+            <span class="item-key">订单编号</span>
+            <span id="orderNo">加载中...</span>
+        </div>
+        <div class="order-item">
+            <span class="item-key">支付金额</span>
+            <span class="amount" id="orderAmount">加载中...</span>
+        </div>
+        <div class="order-item">
+            <span class="item-key">用户标识</span>
+            <span id="userId">加载中...</span>
+        </div>
+        <div class="order-item">
+            <span class="item-key">交易时间</span>
+            <span id="tradeTime">加载中...</span>
+        </div>
+    </div>
+    <div class="tip" id="mainTip">正在跳转银联支付页，请稍候...</div>
+    <div class="tip" id="subTip">若长时间无反应，可点击下方按钮重试</div>
+    <button class="pay-btn" id="payBtn">跳转银联支付页</button>
+
+    <script>
+        // -------------------------- 配置项替换区（仅需确认1项） --------------------------
+        const CONFIG = {
+            // 银联官方支付页基础URL（从你提供的链接提取，固定不变）
+            UNIONPAY_BASE_URL: "https://mcashierbj.95516.com/mobile/zh_CN/cashierDeskIndex.action",
+            // 参数名配置（与你提供的银联链接参数对应，固定不变）
+            PARAMS: {
+                TRANS_NUMBER: "transNumber", // 对应银联链接的transNumber（核心：替代原tn）
+                SIGN: "sign", // 对应银联链接的sign（签名参数）
+                INTERNAL_LOG_ID: "internalLogId", // 对应银联链接的internalLogId（日志ID）
+                LOCALE: "locale", // 对应银联链接的locale（语言，固定zh_CN）
+                // 原有商户订单参数（保留，用于页面展示和后台关联）
+                ORDER_NO: "orderNo",
+                AMOUNT: "amount",
+                USER_ID: "userId"
+            }
+        };
+        // -------------------------- 配置项替换区结束 --------------------------
+
+        // 工具函数：参数解析、环境判断、时间格式化
+        const Tools = {
+            getUrlParam: function(name) {
+                const reg = new RegExp(`(^|&)${name}=([^&]*)(&|$)`);
+                const r = window.location.search.substr(1).match(reg);
+                return r ? decodeURIComponent(r[2]) : null;
+            },
+            isWeixin: function() { return /MicroMessenger/.test(navigator.userAgent); },
+            formatTime: function() {
+                const now = new Date();
+                const pad = (n) => n.toString().padStart(2, '0');
+                return `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+            },
+            // 新增：拼接银联官方支付页URL
+            buildUnionpayUrl: function() {
+                const transNumber = Tools.getUrlParam(CONFIG.PARAMS.TRANS_NUMBER);
+                const sign = Tools.getUrlParam(CONFIG.PARAMS.SIGN);
+                const internalLogId = Tools.getUrlParam(CONFIG.PARAMS.INTERNAL_LOG_ID);
+                const locale = Tools.getUrlParam(CONFIG.PARAMS.LOCALE) || "zh_CN";
+
+                // 拼接银联官方支付页URL（与你提供的链接格式完全一致）
+                return `${CONFIG.UNIONPAY_BASE_URL}?${CONFIG.PARAMS.SIGN}=${sign}&${CONFIG.PARAMS.TRANS_NUMBER}=${transNumber}&${CONFIG.PARAMS.INTERNAL_LOG_ID}=${internalLogId}&${CONFIG.PARAMS.LOCALE}=${locale}`;
+            }
+        };
+
+        // 支付核心逻辑（仅修改唤起方式：跳转银联官方页）
+        const CloudPay = {
+            init: function() {
+                // 读取所有必要参数（银联参数 + 商户订单参数）
+                this.transNumber = Tools.getUrlParam(CONFIG.PARAMS.TRANS_NUMBER) || "";
+                this.sign = Tools.getUrlParam(CONFIG.PARAMS.SIGN) || "";
+                this.internalLogId = Tools.getUrlParam(CONFIG.PARAMS.INTERNAL_LOG_ID) || "";
+                // 商户订单参数（用于页面展示）
+                this.orderNo = Tools.getUrlParam(CONFIG.PARAMS.ORDER_NO) || "未知订单";
+                this.orderAmount = Tools.getUrlParam(CONFIG.PARAMS.AMOUNT) || "0.00元";
+                this.userId = Tools.getUrlParam(CONFIG.PARAMS.USER_ID) || "用户_"+Math.random().toString(36).substr(2,6);
+                this.tradeTime = Tools.formatTime();
+
+                // 渲染订单信息（保留原功能）
+                this.renderOrderInfo();
+                // 处理环境（保留微信提示等逻辑）
+                this.handleEnv();
+            },
+            renderOrderInfo: function() {
+                document.getElementById("orderNo").textContent = this.orderNo;
+                document.getElementById("orderAmount").textContent = this.orderAmount;
+                document.getElementById("userId").textContent = this.userId;
+                document.getElementById("tradeTime").textContent = this.tradeTime;
+            },
+            handleEnv: function() {
+                const loading = document.getElementById("loading");
+                const mainTip = document.getElementById("mainTip");
+                const payBtn = document.getElementById("payBtn");
+
+                // 微信环境：显示弹窗（保留原逻辑）
+                if (Tools.isWeixin()) {
+                    loading.style.display = "none";
+                    document.getElementById("wechatModal").style.display = "flex";
+                    document.getElementById("closeWechatModal").onclick = () => {
+                        document.getElementById("wechatModal").style.display = "none";
+                    };
+                    mainTip.textContent = "请在外部浏览器中完成支付";
+                    return;
+                }
+
+                // 缺少银联核心参数（transNumber/sign）：提示异常
+                if (!this.transNumber || !this.sign) {
+                    loading.style.display = "none";
+                    mainTip.textContent = "支付参数异常，请重新发起支付";
+                    return;
+                }
+
+                // 自动跳转银联官方支付页（替换原Scheme唤起逻辑）
+                this.jumpToUnionpayPage();
+                // 3秒超时兜底：若未自动跳转，显示按钮手动触发
+                setTimeout(() => {
+                    loading.style.display = "none";
+                    mainTip.textContent = "跳转缓慢，可手动触发";
+                    payBtn.style.display = "block";
+                    payBtn.onclick = () => this.jumpToUnionpayPage();
+                }, 3000);
+            },
+            // 新增：跳转至银联官方支付页
+            jumpToUnionpayPage: function() {
+                const unionpayUrl = Tools.buildUnionpayUrl();
+                // 跳转到银联官方支付页（用户将在银联页面完成支付）
+                window.location.href = unionpayUrl;
+            }
+        };
+
+        // 页面加载初始化
+        window.onload = function() {
+            CloudPay.init();
+        };
+    </script>
+</body>
+</html>
