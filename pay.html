@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="always">
+    <!-- 新增：缓存控制（协商缓存，兼顾新鲜度与性能） -->
+    <meta http-equiv="Cache-Control" content="no-cache">
+    <meta http-equiv="Pragma" content="no-cache">
+    <!-- 新增：预建立银联域名连接，减少跳转延迟 -->
+    <link rel="preconnect" href="https://mcashierbj.95516.com">
+    <title>云闪付安全支付</title>
+    <style>
+        /* 优化：移除冗余样式，合并重复规则，减少CSS体积 */
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Arial", sans-serif; }
+        body { background: #f8f9fa; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 20px; }
+        .safe-tip { position: fixed; top: 0; left: 0; right: 0; background: #007AFF; color: white; padding: 12px; text-align: center; font-size: 14px; z-index: 999; }
+        .loading { width: 40px; height: 40px; border: 4px solid #e5e7eb; border-top: 4px solid #007AFF; border-radius: 50%; animation: spin 1s linear infinite; margin: 80px 0 20px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .logo { width: 80px; height: 80px; background: #007AFF; border-radius: 16px; display: flex; align-items: center; justify-content: center; color: white; font-size: 18px; margin-bottom: 20px; }
+        .order-card { width: 100%; max-width: 350px; background: white; border-radius: 12px; padding: 18px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 25px; }
+        .order-card .card-title { font-size: 16px; color: #333; margin-bottom: 15px; padding-bottom: 8px; border-bottom: 1px solid #f0f0f0; }
+        .order-item { display: flex; justify-content: space-between; font-size: 15px; color: #666; margin: 12px 0; }
+        .order-item .item-key { color: #888; }
+        .order-item .amount { color: #E53935; font-weight: 500; font-size: 16px; }
+        .tip { font-size: 15px; color: #555; margin: 8px 0; text-align: center; line-height: 1.5; }
+        .pay-btn { margin-top: 15px; padding: 14px 40px; background: #007AFF; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 500; cursor: pointer; display: none; transition: background 0.3s; }
+        .pay-btn:hover { background: #0066D6; }
+        .wechat-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; justify-content: center; align-items: center; z-index: 1000; }
+        .wechat-content { width: 80%; max-width: 300px; background: white; border-radius: 12px; padding: 25px 20px; text-align: center; }
+        .wechat-icon { font-size: 40px; color: #7BB32E; margin-bottom: 15px; }
+        .wechat-text { font-size: 16px; color: #333; margin-bottom: 20px; line-height: 1.6; }
+        .wechat-btn { padding: 10px 25px; background: #007AFF; color: white; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; }
+        /* 新增：首屏加载时隐藏非关键内容，减少初始渲染压力 */
+        .order-card, .subTip, .pay-btn { opacity: 0; animation: fadeIn 0.5s 0.3s forwards; }
+        @keyframes fadeIn { to { opacity: 1; } }
+    </style>
+</head>
+<body>
+    <div class="safe-tip">云闪付安全支付中</div>
+    <!-- 微信提示弹窗：保留核心功能，结构无冗余 -->
+    <div class="wechat-modal" id="wechatModal">
+        <div class="wechat-content">
+            <div class="wechat-icon">✓</div>
+            <div class="wechat-text">微信暂不支持直接唤起云闪付<br>请点击右上角「...」选择「在浏览器中打开」</div>
+            <button class="wechat-btn" id="closeWechatModal">我知道了</button>
+        </div>
+    </div>
+    <!-- 首屏关键内容：加载动画+logo，优先渲染 -->
+    <div class="loading" id="loading"></div>
+    <div class="logo">云闪付</div>
+    <!-- 订单卡片：非首屏核心，添加渐入动画 -->
+    <div class="order-card" id="orderCard">
+        <div class="card-title">订单详情</div>
+        <div class="order-item">
+            <span class="item-key">订单编号</span>
+            <span id="orderNo">加载中...</span>
+        </div>
+        <div class="order-item">
+            <span class="item-key">支付金额</span>
+            <span class="amount" id="orderAmount">加载中...</span>
+        </div>
+        <div class="order-item">
+            <span class="item-key">用户标识</span>
+            <span id="userId">加载中...</span>
+        </div>
+        <div class="order-item">
+            <span class="item-key">交易时间</span>
+            <span id="tradeTime">加载中...</span>
+        </div>
+    </div>
+    <div class="tip" id="mainTip">正在跳转银联支付页，请稍候...</div>
+    <div class="tip" id="subTip">若长时间无反应，可点击下方按钮重试</div>
+    <button class="pay-btn" id="payBtn">跳转银联支付页</button>
+    <script>
+        // 优化1：精简工具函数，移除冗余逻辑，提升执行效率
+        const Tools = {
+            getUrlParam: function(name) {
+                const reg = new RegExp(`(^|&)${name}=([^&]*)(&|$)`);
+                const r = window.location.search.substr(1).match(reg);
+                return r ? decodeURIComponent(r[2]) : null;
+            },
+            isWeixin: function() { return /MicroMessenger/.test(navigator.userAgent); },
+            formatTime: function() {
+                const now = new Date();
+                const pad = (n) => n.toString().padStart(2, '0');
+                return `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+            },
+            buildUnionpayUrl: function() {
+                // 优化：提前定义参数名，减少重复书写，降低出错概率
+                const paramsMap = {
+                    sign: Tools.getUrlParam("sign") || "",
+                    transNumber: Tools.getUrlParam("transNumber") || "",
+                    internalLogId: Tools.getUrlParam("internalLogId") || "",
+                    locale: Tools.getUrlParam("locale") || "zh_CN"
+                };
+                // 优化：模板字符串拼接，更简洁易维护
+                return `https://mcashierbj.95516.com/mobile/zh_CN/cashierDeskIndex.action?sign=${paramsMap.sign}&transNumber=${paramsMap.transNumber}&internalLogId=${paramsMap.internalLogId}&locale=${paramsMap.locale}`;
+            }
+        };
+
+        // 优化2：核心逻辑模块化，减少全局变量污染
+        const CloudPay = {
+            // 初始化：仅加载必要参数，避免冗余计算
+            init: function() {
+                this.coreParams = {
+                    transNumber: Tools.getUrlParam("transNumber") || "",
+                    sign: Tools.getUrlParam("sign") || "",
+                    internalLogId: Tools.getUrlParam("internalLogId") || ""
+                };
+                this.orderParams = {
+                    orderNo: Tools.getUrlParam("orderNo") || "未知订单",
+                    orderAmount: Tools.getUrlParam("amount") || "0.00元",
+                    userId: Tools.getUrlParam("userId") || `用户_${Math.random().toString(36).substr(2,6)}`,
+                    tradeTime: Tools.formatTime()
+                };
+                this.renderOrderInfo();
+                this.handleEnv();
+            },
+            // 渲染订单：批量操作DOM，减少重绘回流（原多次getElementById→一次批量赋值）
+            renderOrderInfo: function() {
+                const orderEls = {
+                    orderNo: document.getElementById("orderNo"),
+                    orderAmount: document.getElementById("orderAmount"),
+                    userId: document.getElementById("userId"),
+                    tradeTime: document.getElementById("tradeTime")
+                };
+                orderEls.orderNo.textContent = this.orderParams.orderNo;
+                orderEls.orderAmount.textContent = this.orderParams.orderAmount;
+                orderEls.userId.textContent = this.orderParams.userId;
+                orderEls.tradeTime.textContent = this.orderParams.tradeTime;
+            },
+            // 环境处理：逻辑分层，清晰易维护
+            handleEnv: function() {
+                const loading = document.getElementById("loading");
+                const mainTip = document.getElementById("mainTip");
+                const payBtn = document.getElementById("payBtn");
+
+                // 微信环境：优先判断，快速响应
+                if (Tools.isWeixin()) {
+                    loading.style.display = "none";
+                    document.getElementById("wechatModal").style.display = "flex";
+                    document.getElementById("closeWechatModal").onclick = () => {
+                        document.getElementById("wechatModal").style.display = "none";
+                    };
+                    mainTip.textContent = "请在外部浏览器中完成支付";
+                    return;
+                }
+
+                // 参数异常：提前拦截，避免无效跳转
+                if (!this.coreParams.transNumber || !this.coreParams.sign) {
+                    loading.style.display = "none";
+                    mainTip.textContent = "支付参数异常，请重新发起支付";
+                    return;
+                }
+
+                // 正常环境：自动跳转+超时兜底
+                this.jumpToUnionpayPage();
+                setTimeout(() => {
+                    loading.style.display = "none";
+                    mainTip.textContent = "跳转缓慢，可手动触发";
+                    payBtn.style.display = "block";
+                    payBtn.onclick = () => this.jumpToUnionpayPage();
+                }, 3000);
+            },
+            // 跳转银联：单一职责，仅处理跳转逻辑
+            jumpToUnionpayPage: function() {
+                const unionpayUrl = Tools.buildUnionpayUrl();
+                window.location.href = unionpayUrl;
+            }
+        };
+
+        // 优化3：页面加载完成后执行，避免DOM未就绪问题（原window.onload→DOMContentLoaded，更早执行）
+        document.addEventListener("DOMContentLoaded", function() {
+            CloudPay.init();
+        });
+    </script>
+</body>
+</html>
